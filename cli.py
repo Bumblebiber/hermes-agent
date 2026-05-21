@@ -5830,31 +5830,23 @@ class HermesCLI:
         print()
 
     def _handle_brainstorm_command(self, cmd: str):
-        """Interactive brainstorming wizard with overlay dialogs.
+        """Interactive brainstorming wizard with Hermes curses overlays.
 
         Guides the user through topic → technique → model selection → rounds.
-        Uses prompt_toolkit dialogs for a clean overlay UX.
+        Uses hermes_cli.curses_ui (same as hermes tools/skills/setup) instead
+        of prompt_toolkit shortcuts which are buggy in the Hermes TUI.
         """
         from agent.groupchat import GroupChat
         from tools.brainstorm_tool import _find_skill_file, _parse_skill, _list_available_techniques, _discover_available_models
+        from hermes_cli.curses_ui import curses_radiolist, curses_checklist, flush_stdin
         import prompt_toolkit
-        from prompt_toolkit.shortcuts import (
-            input_dialog,
-            radiolist_dialog,
-            checkboxlist_dialog,
-        )
 
         # ── Step 1: Topic ──────────────────────────────────────────
-        topic = prompt_toolkit.shortcuts.input_dialog(
-            title="🧠 Brainstorm",
-            text="What topic do you want to brainstorm?",
-        ).run()
-        if topic is None:
-            _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
-            return
-        topic = topic.strip()
+        print()
+        _cprint(f"  🧠  Brainstorm")
+        topic = input("  Topic: ").strip()
         if not topic:
-            _cprint(f"  {_DIM}Empty topic — cancelled.{_RST}")
+            _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
             return
 
         # ── Step 2: Technique ─────────────────────────────────────
@@ -5863,14 +5855,17 @@ class HermesCLI:
             _cprint(f"  {_DIM}No techniques found.{_RST}")
             return
 
-        technique = radiolist_dialog(
-            title="🧠 Brainstorm",
-            text="Which creativity technique?",
-            values=[(t, t.capitalize().replace("-", " ")) for t in techniques],
-        ).run()
-        if technique is None:
+        flush_stdin()
+        technique_idx = curses_radiolist(
+            "🧠 Brainstorm — Which creativity technique?",
+            [t.capitalize().replace("-", " ") for t in techniques],
+            cancel_returns=-1,
+        )
+        flush_stdin()
+        if technique_idx < 0:
             _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
             return
+        technique = techniques[technique_idx]
 
         # ── Step 3: Models ────────────────────────────────────────
         available_models = _discover_available_models()
@@ -5878,33 +5873,23 @@ class HermesCLI:
             _cprint(f"  {_DIM}No API keys configured. Set OPENROUTER_API_KEY etc. in ~/.hermes/.env{_RST}")
             return
 
-        model_labels = []
-        model_map = {}
-        for m in available_models:
-            label = f"{m['provider']}/{m['model']}  ({m['key']})"
-            model_labels.append((m["id"], label))
-            model_map[m["id"]] = m
+        model_labels = [f"{m['provider']}/{m['model']}  ({m['key']})" for m in available_models]
 
-        chosen_ids = checkboxlist_dialog(
-            title="🧠 Brainstorm",
-            text="Select models to use (space=toggle, enter=confirm):",
-            values=model_labels,
-        ).run()
-        if chosen_ids is None or not chosen_ids:
+        chosen_idx = curses_checklist(
+            "🧠 Brainstorm — Select models (space=toggle, enter=confirm)",
+            model_labels,
+            selected=set(),
+        )
+        flush_stdin()
+        if not chosen_idx:
             _cprint(f"  {_DIM}No models selected — cancelled.{_RST}")
             return
-        chosen_models = [model_map[mid] for mid in chosen_ids]
+        chosen_models = [available_models[i] for i in sorted(chosen_idx)]
 
         # ── Step 4: Rounds ────────────────────────────────────────
-        answer = input_dialog(
-            title="🧠 Brainstorm",
-            text="How many rounds? (1-5):",
-        ).run()
-        if answer is None:
-            _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
-            return
+        answer = input("  Rounds (1-5, default 1): ").strip()
         try:
-            rounds = max(1, min(5, int(answer.strip())))
+            rounds = max(1, min(5, int(answer))) if answer else 1
         except ValueError:
             rounds = 1
 
