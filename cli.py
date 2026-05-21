@@ -5830,100 +5830,125 @@ class HermesCLI:
         print()
 
     def _handle_brainstorm_command(self, cmd: str):
-        """Start an interactive multi-model brainstorming session.
+        """Interactive brainstorming wizard with overlay dialogs.
 
-        Usage: /brainstorm <technique> [topic]
-
-        Loads the technique skill, creates a GroupChat with role-based
-        participants, and enters an interactive chat loop. User messages
-        with @mentions route to participants; each replies independently.
-        Type `/stop` or Ctrl+C to exit back to the main agent.
+        Guides the user through topic → technique → model selection → rounds.
+        Uses prompt_toolkit dialogs for a clean overlay UX.
         """
         from agent.groupchat import GroupChat
-        from tools.brainstorm_tool import _find_skill_file, _parse_skill, _resolve_provider_for_model
+        from tools.brainstorm_tool import _find_skill_file, _parse_skill, _list_available_techniques, _discover_available_models
+        import prompt_toolkit
+        from prompt_toolkit.shortcuts import (
+            input_dialog,
+            radiolist_dialog,
+            checkboxlist_dialog,
+        )
 
-        parts = cmd.strip().split(maxsplit=2)
-        technique = parts[1].strip().lower() if len(parts) > 1 else ""
-        topic = parts[2].strip() if len(parts) > 2 else ""
-
-        if not technique:
-            # List available techniques
-            from tools.brainstorm_tool import _list_available_techniques
-            available = _list_available_techniques()
-            if available:
-                techniques_str = ", ".join(available)
-                print(f"\n  {_DIM}Available techniques:{_RST} {techniques_str}")
-                print(f"  {_DIM}Usage:{_RST} /brainstorm <technique> [topic]")
-                print(f"  {_DIM}Example:{_RST} /brainstorm disney \"How to improve onboarding?\"\n")
-            else:
-                print(f"\n  {_DIM}No brainstorm techniques found. Skills in ~/.hermes/skills/brainstorm-*.md{_RST}\n")
+        # ── Step 1: Topic ──────────────────────────────────────────
+        topic = prompt_toolkit.shortcuts.input_dialog(
+            title="🧠 Brainstorm",
+            text="What topic do you want to brainstorm?",
+        ).run()
+        if topic is None:
+            _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
+            return
+        topic = topic.strip()
+        if not topic:
+            _cprint(f"  {_DIM}Empty topic — cancelled.{_RST}")
             return
 
-        # Find and parse the technique
-        skill_file = _find_skill_file(technique)
-        if not skill_file:
-            from tools.brainstorm_tool import _list_available_techniques
-            available = _list_available_techniques()
-            print(f"\n  {_DIM}Unknown technique '{technique}'. Available:{_RST} {', '.join(available) or 'none'}\n")
+        # ── Step 2: Technique ─────────────────────────────────────
+        techniques = _list_available_techniques()
+        if not techniques:
+            _cprint(f"  {_DIM}No techniques found.{_RST}")
             return
 
+        technique = radiolist_dialog(
+            title="🧠 Brainstorm",
+            text="Which creativity technique?",
+            values=[(t, t.capitalize().replace("-", " ")) for t in techniques],
+        ).run()
+        if technique is None:
+            _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
+            return
+
+        # ── Step 3: Models ────────────────────────────────────────
+        available_models = _discover_available_models()
+        if not available_models:
+            _cprint(f"  {_DIM}No API keys configured. Set OPENROUTER_API_KEY etc. in ~/.hermes/.env{_RST}")
+            return
+
+        model_labels = []
+        model_map = {}
+        for m in available_models:
+            label = f"{m['provider']}/{m['model']}  ({m['key']})"
+            model_labels.append((m["id"], label))
+            model_map[m["id"]] = m
+
+        chosen_ids = checkboxlist_dialog(
+            title="🧠 Brainstorm",
+            text="Select models to use (space=toggle, enter=confirm):",
+            values=model_labels,
+        ).run()
+        if chosen_ids is None or not chosen_ids:
+            _cprint(f"  {_DIM}No models selected — cancelled.{_RST}")
+            return
+        chosen_models = [model_map[mid] for mid in chosen_ids]
+
+        # ── Step 4: Rounds ────────────────────────────────────────
+        answer = input_dialog(
+            title="🧠 Brainstorm",
+            text="How many rounds? (1-5):",
+        ).run()
+        if answer is None:
+            _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
+            return
         try:
-            skill = _parse_skill(skill_file)
-        except Exception as exc:
-            print(f"\n  {_DIM}Failed to parse technique:{_RST} {exc}\n")
-            return
+            rounds = max(1, min(5, int(answer.strip())))
+        except ValueError:
+            rounds = 1
 
+        # ── Load technique & build GroupChat ──────────────────────
+        skill_file = _find_skill_file(technique)
+        skill = _parse_skill(skill_file)
         participants = skill.get("participants", [])
-        if not participants:
-            print(f"\n  {_DIM}No participants defined in '{technique}'.{_RST}\n")
-            return
 
-        # Build participants
         gc = GroupChat()
-        for p in participants:
-            name = p["name"]
-            provider = _resolve_provider_for_model(p.get("model"))
-            model = p.get("model") or ""
+        for i, p in enumerate(participants):
+            mi = i % len(chosen_models)
             gc.add(
-                name=name,
+                name=p["name"],
                 system=p["system_prompt"],
-                provider=provider,
-                model=model if model else None,
+                provider=chosen_models[mi]["provider"],
+                model=chosen_models[mi]["model"],
             )
 
-        # Show welcome banner
-        pnames = ", ".join(p["name"] for p in participants)
-        provider_list = []
-        for p in participants:
-            prov = _resolve_provider_for_model(p.get("model"))
-            mod = p.get("model") or "default"
-            provider_list.append(f"@{p['name']} ({prov}/{mod})")
-        prov_str = "\n  ".join(provider_list)
-
+        # ── Welcome banner ─────────────────────────────────────────
+        prov_str = "\n  ".join(
+            f"@{p['name']} ({chosen_models[i % len(chosen_models)]['provider']}/{chosen_models[i % len(chosen_models)]['model']})"
+            for i, p in enumerate(participants)
+        )
         print()
-        print(f"  🧠  GroupChat: {technique.upper()}")
+        print(f"  🧠  GroupChat: {technique.upper()}  ·  {rounds} round(s)")
+        print(f"  Topic: {topic}")
         print(f"  {_DIM}Participants:{_RST}")
         print(f"  {prov_str}")
         print()
-        print(f"  {_DIM}How to use:{_RST}")
-        print(f"  {_DIM}• @Name message{_RST}  — address one participant")
-        print(f"  {_DIM}• @all message{_RST}    — address everyone")
-        print(f"  {_DIM}• /stop{_RST}           — exit brainstorm")
+        print(f"  {_DIM}@Name message{_RST}  ·  {_DIM}@all message{_RST}  ·  {_DIM}/stop{_RST}")
         print()
 
-        if topic:
-            print(f"  Topic: {topic}")
-            try:
-                result = gc.send(f"@all {topic}")
-                print(result)
-            except Exception as exc:
-                print(f"  {_DIM}Initial round failed:{_RST} {exc}")
-            print()
-
-        # Interactive loop
-        import prompt_toolkit
+        # ── Initial round ──────────────────────────────────────────
         try:
-            while True:
+            result = gc.send(f"@all {topic}")
+            print(result)
+        except Exception as exc:
+            print(f"  {_DIM}Initial round failed:{_RST} {exc}")
+        print()
+
+        # ── Interactive loop ───────────────────────────────────────
+        try:
+            round_num = 1
+            while round_num < rounds:
                 try:
                     user_input = prompt_toolkit.prompt(
                         [("class:brainstorm-prompt", "  🧠 > ")],
@@ -5937,24 +5962,29 @@ class HermesCLI:
 
                 if not user_input:
                     continue
-
                 if user_input.lower() in ("/stop", "/exit", "/quit"):
-                    print(f"\n  {_DIM}Exiting brainstorm.{_RST}")
-                    transcript = gc.full_transcript()
-                    if transcript.strip():
-                        print(f"\n  {_DIM}── Full Transcript ──{_RST}")
-                        print(transcript)
-                    print()
                     break
 
                 try:
                     result = gc.send(user_input)
                     print()
                     print(result)
+                    round_num += 1
                 except Exception as exc:
                     print(f"\n  {_DIM}Error:{_RST} {exc}\n")
+
+            if round_num >= rounds and rounds > 1:
+                print(f"  {_DIM}All {rounds} rounds complete.{_RST}")
         except Exception:
-            print(f"\n  {_DIM}Exiting brainstorm.{_RST}\n")
+            pass
+
+        # ── Transcript ─────────────────────────────────────────────
+        print(f"\n  {_DIM}Exiting brainstorm.{_RST}")
+        transcript = gc.full_transcript()
+        if transcript.strip():
+            print(f"\n  {_DIM}── Full Transcript ──{_RST}")
+            print(transcript)
+        print()
 
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""

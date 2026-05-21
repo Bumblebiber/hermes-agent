@@ -238,6 +238,25 @@ def _list_available_techniques() -> List[str]:
     return sorted(set(techniques))
 
 
+def _discover_available_models() -> List[Dict[str, str]]:
+    """Scan environment for configured LLM providers and return model list.
+
+    Returns list of {id, provider, model, key} for each discovered model.
+    """
+    models = []
+    if os.getenv("OPENROUTER_API_KEY"):
+        models.append({"id": "or-claude", "provider": "openrouter", "model": "anthropic/claude-sonnet-4", "key": "OPENROUTER_API_KEY"})
+        models.append({"id": "or-gpt4o", "provider": "openrouter", "model": "openai/gpt-4o", "key": "OPENROUTER_API_KEY"})
+        models.append({"id": "or-deepseek", "provider": "openrouter", "model": "deepseek/deepseek-chat", "key": "OPENROUTER_API_KEY"})
+    if os.getenv("ANTHROPIC_API_KEY"):
+        models.append({"id": "anthropic", "provider": "anthropic", "model": "claude-sonnet-4-20250514", "key": "ANTHROPIC_API_KEY"})
+    if os.getenv("OPENAI_API_KEY"):
+        models.append({"id": "openai", "provider": "openai", "model": "gpt-4o", "key": "OPENAI_API_KEY"})
+    if os.getenv("DEEPSEEK_API_KEY"):
+        models.append({"id": "deepseek", "provider": "deepseek", "model": "deepseek-chat", "key": "DEEPSEEK_API_KEY"})
+    return models
+
+
 def check_brainstorm_requirements() -> bool:
     """Brainstorming requires at least one configured LLM provider."""
     return bool(
