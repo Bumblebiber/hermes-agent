@@ -5829,6 +5829,133 @@ class HermesCLI:
         print(f"  Home:    {display}")
         print()
 
+    def _handle_brainstorm_command(self, cmd: str):
+        """Start an interactive multi-model brainstorming session.
+
+        Usage: /brainstorm <technique> [topic]
+
+        Loads the technique skill, creates a GroupChat with role-based
+        participants, and enters an interactive chat loop. User messages
+        with @mentions route to participants; each replies independently.
+        Type `/stop` or Ctrl+C to exit back to the main agent.
+        """
+        from agent.groupchat import GroupChat
+        from tools.brainstorm_tool import _find_skill_file, _parse_skill, _resolve_provider_for_model
+
+        parts = cmd.strip().split(maxsplit=2)
+        technique = parts[1].strip().lower() if len(parts) > 1 else ""
+        topic = parts[2].strip() if len(parts) > 2 else ""
+
+        if not technique:
+            # List available techniques
+            from tools.brainstorm_tool import _list_available_techniques
+            available = _list_available_techniques()
+            if available:
+                techniques_str = ", ".join(available)
+                print(f"\n  {_DIM}Available techniques:{_RST} {techniques_str}")
+                print(f"  {_DIM}Usage:{_RST} /brainstorm <technique> [topic]")
+                print(f"  {_DIM}Example:{_RST} /brainstorm disney \"How to improve onboarding?\"\n")
+            else:
+                print(f"\n  {_DIM}No brainstorm techniques found. Skills in ~/.hermes/skills/brainstorm-*.md{_RST}\n")
+            return
+
+        # Find and parse the technique
+        skill_file = _find_skill_file(technique)
+        if not skill_file:
+            from tools.brainstorm_tool import _list_available_techniques
+            available = _list_available_techniques()
+            print(f"\n  {_DIM}Unknown technique '{technique}'. Available:{_RST} {', '.join(available) or 'none'}\n")
+            return
+
+        try:
+            skill = _parse_skill(skill_file)
+        except Exception as exc:
+            print(f"\n  {_DIM}Failed to parse technique:{_RST} {exc}\n")
+            return
+
+        participants = skill.get("participants", [])
+        if not participants:
+            print(f"\n  {_DIM}No participants defined in '{technique}'.{_RST}\n")
+            return
+
+        # Build participants
+        gc = GroupChat()
+        for p in participants:
+            name = p["name"]
+            provider = _resolve_provider_for_model(p.get("model"))
+            model = p.get("model") or ""
+            gc.add(
+                name=name,
+                system=p["system_prompt"],
+                provider=provider,
+                model=model if model else None,
+            )
+
+        # Show welcome banner
+        pnames = ", ".join(p["name"] for p in participants)
+        provider_list = []
+        for p in participants:
+            prov = _resolve_provider_for_model(p.get("model"))
+            mod = p.get("model") or "default"
+            provider_list.append(f"@{p['name']} ({prov}/{mod})")
+        prov_str = "\n  ".join(provider_list)
+
+        print()
+        print(f"  🧠  GroupChat: {technique.upper()}")
+        print(f"  {_DIM}Participants:{_RST}")
+        print(f"  {prov_str}")
+        print()
+        print(f"  {_DIM}How to use:{_RST}")
+        print(f"  {_DIM}• @Name message{_RST}  — address one participant")
+        print(f"  {_DIM}• @all message{_RST}    — address everyone")
+        print(f"  {_DIM}• /stop{_RST}           — exit brainstorm")
+        print()
+
+        if topic:
+            print(f"  Topic: {topic}")
+            try:
+                result = gc.send(f"@all {topic}")
+                print(result)
+            except Exception as exc:
+                print(f"  {_DIM}Initial round failed:{_RST} {exc}")
+            print()
+
+        # Interactive loop
+        import prompt_toolkit
+        try:
+            while True:
+                try:
+                    user_input = prompt_toolkit.prompt(
+                        [("class:brainstorm-prompt", "  🧠 > ")],
+                        style=prompt_toolkit.styles.Style.from_dict({
+                            "brainstorm-prompt": "#ff6b9d bold",
+                        }),
+                    ).strip()
+                except (EOFError, KeyboardInterrupt):
+                    print(f"\n  {_DIM}Exiting brainstorm.{_RST}\n")
+                    break
+
+                if not user_input:
+                    continue
+
+                if user_input.lower() in ("/stop", "/exit", "/quit"):
+                    print(f"\n  {_DIM}Exiting brainstorm.{_RST}")
+                    transcript = gc.full_transcript()
+                    if transcript.strip():
+                        print(f"\n  {_DIM}── Full Transcript ──{_RST}")
+                        print(transcript)
+                    print()
+                    break
+
+                try:
+                    result = gc.send(user_input)
+                    print()
+                    print(result)
+                except Exception as exc:
+                    print(f"\n  {_DIM}Error:{_RST} {exc}\n")
+        except Exception:
+            print(f"\n  {_DIM}Exiting brainstorm.{_RST}\n")
+
     def show_config(self):
         """Display current configuration with kawaii ASCII art."""
         # Get terminal config from environment (which was set from cli-config.yaml)
@@ -7840,6 +7967,8 @@ class HermesCLI:
             self.show_help()
         elif canonical == "profile":
             self._handle_profile_command()
+        elif canonical == "brainstorm":
+            self._handle_brainstorm_command(cmd_original)
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
         elif canonical == "toolsets":

@@ -70,6 +70,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
+    # Multi-model creative brainstorming (gated on provider API keys via check_fn)
+    "brainstorm",
 ]
 
 
@@ -531,6 +533,11 @@ TOOLSETS = {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
         "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook", "hermes-yuanbao"]
+    },
+    "creativity": {
+        "description": "Multi-model creative brainstorming tools",
+        "tools": ["brainstorm"],
+        "includes": []
     }
 }
 
