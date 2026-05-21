@@ -5844,7 +5844,11 @@ class HermesCLI:
         # ── Step 1: Topic ──────────────────────────────────────────
         print()
         _cprint(f"  🧠  Brainstorm")
-        topic = input("  Topic: ").strip()
+        try:
+            topic = prompt_toolkit.prompt("  Topic: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
+            return
         if not topic:
             _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
             return
@@ -5887,11 +5891,15 @@ class HermesCLI:
         chosen_models = [available_models[i] for i in sorted(chosen_idx)]
 
         # ── Step 4: Rounds ────────────────────────────────────────
-        answer = input("  Rounds (1-5, default 1): ").strip()
         try:
-            rounds = max(1, min(5, int(answer))) if answer else 1
-        except ValueError:
+            answer = prompt_toolkit.prompt("  Rounds (1-5, default 1): ").strip()
+        except (EOFError, KeyboardInterrupt):
             rounds = 1
+        else:
+            try:
+                rounds = max(1, min(5, int(answer))) if answer else 1
+            except ValueError:
+                rounds = 1
 
         # ── Load technique & build GroupChat ──────────────────────
         skill_file = _find_skill_file(technique)
