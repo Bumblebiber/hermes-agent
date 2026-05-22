@@ -5837,8 +5837,9 @@ class HermesCLI:
         of prompt_toolkit shortcuts which are buggy in the Hermes TUI.
         """
         from agent.groupchat import GroupChat
-        from tools.brainstorm_tool import _find_skill_file, _parse_skill, _list_available_techniques, _discover_available_models
-        from hermes_cli.curses_ui import curses_radiolist, curses_checklist, flush_stdin
+        from tools.brainstorm_tool import _find_skill_file, _parse_skill, _list_available_techniques
+        from tools.openrouter_catalog import get_model_tree
+        from hermes_cli.curses_ui import curses_radiolist, curses_tree_checklist, flush_stdin
         from prompt_toolkit.shortcuts import input_dialog
 
         # ── Step 1: Topic ──────────────────────────────────────────
@@ -5874,23 +5875,53 @@ class HermesCLI:
         technique = techniques[technique_idx]
 
         # ── Step 3: Models ────────────────────────────────────────
-        available_models = _discover_available_models()
+        checkout_models = os.getenv("CHECKOUT_MODELS_OVERRIDE")
+        if checkout_models:
+            # Fast path: explicit model list in env var (comma-separated provider/model)
+            available_models = []
+            for entry in checkout_models.split(","):
+                entry = entry.strip()
+                if "/" not in entry:
+                    continue
+                provider, model = entry.split("/", 1)
+                available_models.append({
+                    "id": entry, "provider": provider, "model": model,
+                    "key": f"{provider.upper()}_API_KEY",
+                })
+        else:
+            # Dynamic: fetch from OpenRouter API + local providers → tree picker
+            model_tree = get_model_tree()
+            if not model_tree:
+                _cprint(f"  {_DIM}No models found — check API keys in ~/.hermes/.env{_RST}")
+                return
+
+            flush_stdin()
+            chosen_ids = curses_tree_checklist(
+                "🧠 Brainstorm — Select models (→ expand, space=toggle, enter=confirm)",
+                model_tree,
+            )
+            flush_stdin()
+            if not chosen_ids:
+                _cprint(f"  {_DIM}No models selected — cancelled.{_RST}")
+                return
+
+            # Build model list from selected IDs
+            available_models = []
+            for g in model_tree:
+                for item in g.get("items", []):
+                    if item["id"] in chosen_ids:
+                        available_models.append({
+                            "id": item["id"],
+                            "provider": item["provider"],
+                            "model": item["model"],
+                            "key": item["key"],
+                        })
+
         if not available_models:
             _cprint(f"  {_DIM}No API keys configured. Set OPENROUTER_API_KEY etc. in ~/.hermes/.env{_RST}")
             return
 
-        model_labels = [f"{m['provider']}/{m['model']}  ({m['key']})" for m in available_models]
-
-        chosen_idx = curses_checklist(
-            "🧠 Brainstorm — Select models (space=toggle, enter=confirm)",
-            model_labels,
-            selected=set(),
-        )
-        flush_stdin()
-        if not chosen_idx:
-            _cprint(f"  {_DIM}No models selected — cancelled.{_RST}")
-            return
-        chosen_models = [available_models[i] for i in sorted(chosen_idx)]
+        chosen_models = available_models
 
         # ── Step 4: Rounds ────────────────────────────────────────
         answer = input_dialog(

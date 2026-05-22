@@ -470,3 +470,253 @@ def _numbered_fallback(
         print()
 
     return chosen
+
+
+def curses_tree_checklist(
+    title: str,
+    groups: list,
+    *,
+    cancel_returns: set | None = None,
+) -> set:
+    """Curses collapsible tree with checkboxes for grouped model selection.
+
+    Args:
+        title: Header line.
+        groups: List of group dicts:
+            {name, expanded, items: [{id, label, checked}]}
+        cancel_returns: Set of selected IDs to return on ESC/q.
+
+    Returns:
+        Set of selected item IDs. On cancel, returns cancel_returns.
+    """
+    if cancel_returns is None:
+        cancel_returns = set()
+
+    if not sys.stdin.isatty():
+        return cancel_returns
+
+    # Build flat row list for navigation
+    # Each row: (type, group_idx, item_idx_or_None, visible)
+    # type: "group" or "item"
+    RowType = tuple
+
+    def _build_flat() -> list:
+        rows: list = []
+        for gi, g in enumerate(groups):
+            rows.append(("group", gi, None))
+            if g.get("expanded", False):
+                for ii in range(len(g.get("items", []))):
+                    rows.append(("item", gi, ii))
+        return rows
+
+    # Track checked state (by item id)
+    checked: set = set()
+    for g in groups:
+        for item in g.get("items", []):
+            if item.get("checked"):
+                checked.add(item["id"])
+
+    try:
+        import curses
+        result_holder: list = [None]
+        flat: list = _build_flat()
+        cursor = 0
+
+        def _draw(stdscr):
+            nonlocal flat, cursor
+
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)   # selected row
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)  # header
+                curses.init_pair(3, 8, -1)                     # dim
+                curses.init_pair(4, curses.COLOR_CYAN, -1)     # group header
+
+            scroll_offset = 0
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+
+                # Rebuild flat list on each iteration (groups may expand/collapse)
+                flat = _build_flat()
+                if cursor >= len(flat):
+                    cursor = max(0, len(flat) - 1)
+
+                # Header
+                try:
+                    hattr = curses.A_BOLD
+                    if curses.has_colors():
+                        hattr |= curses.color_pair(2)
+                    stdscr.addnstr(0, 0, title, max_x - 1, hattr)
+                    stdscr.addnstr(
+                        1, 0,
+                        "  ↑↓ nav  → expand  ← collapse  SPACE toggle  ENTER confirm  ESC cancel",
+                        max_x - 1, curses.A_DIM,
+                    )
+                except curses.error:
+                    pass
+
+                # Selected count status
+                try:
+                    status = f"{len(checked)} model(s) selected"
+                    sx = max(0, max_x - len(status) - 1)
+                    sattr = curses.A_DIM
+                    if curses.has_colors():
+                        sattr |= curses.color_pair(3)
+                    stdscr.addnstr(2, sx, status, max_x - sx - 1, sattr)
+                except curses.error:
+                    pass
+
+                # Scrollable rows
+                visible_rows = max_y - 4
+                if cursor < scroll_offset:
+                    scroll_offset = cursor
+                elif cursor >= scroll_offset + visible_rows:
+                    scroll_offset = cursor - visible_rows + 1
+
+                for draw_i, ri in enumerate(
+                    range(scroll_offset, min(len(flat), scroll_offset + visible_rows))
+                ):
+                    y = draw_i + 4
+                    if y >= max_y - 1:
+                        break
+
+                    row = flat[ri]
+                    row_type = row[0]
+                    gi = row[1]
+
+                    attr = curses.A_NORMAL
+                    if ri == cursor:
+                        attr = curses.A_BOLD
+                        if curses.has_colors():
+                            attr |= curses.color_pair(1)
+
+                    if row_type == "group":
+                        g = groups[gi]
+                        expanded = g.get("expanded", False)
+                        icon = "▼" if expanded else "▶"
+                        count = len(g.get("items", []))
+                        line = f" {icon} {g['name']} ({count} models)"
+                        if ri == cursor:
+                            # Use cyan for group cursor
+                            if curses.has_colors():
+                                attr = curses.A_BOLD | curses.color_pair(4)
+                            else:
+                                attr = curses.A_BOLD
+                    else:
+                        item_idx = row[2]
+                        item = groups[gi]["items"][item_idx]
+                        check = "✓" if item["id"] in checked else " "
+                        line = f"    [{check}] {item['label']}"
+
+                    try:
+                        stdscr.addnstr(y, 0, line[:max_x - 1], max_x - 1, attr)
+                    except curses.error:
+                        pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+
+                if key in {curses.KEY_UP, ord("k")}:
+                    if len(flat) > 0:
+                        cursor = (cursor - 1) % len(flat)
+                elif key in {curses.KEY_DOWN, ord("j")}:
+                    if len(flat) > 0:
+                        cursor = (cursor + 1) % len(flat)
+                elif key in {curses.KEY_RIGHT, ord("l")}:
+                    # Expand group
+                    row = flat[cursor] if cursor < len(flat) else None
+                    if row and row[0] == "group":
+                        groups[row[1]]["expanded"] = True
+                elif key in {curses.KEY_LEFT, ord("h")}:
+                    # Collapse group
+                    row = flat[cursor] if cursor < len(flat) else None
+                    if row and row[0] == "group":
+                        groups[row[1]]["expanded"] = False
+                    elif row and row[0] == "item":
+                        # If on an item, jump to its parent group and collapse
+                        parent_gi = row[1]
+                        groups[parent_gi]["expanded"] = False
+                        # Find parent group row index
+                        flat = _build_flat()
+                        for i, fr in enumerate(flat):
+                            if fr[0] == "group" and fr[1] == parent_gi:
+                                cursor = i
+                                break
+                elif key == ord(" "):
+                    # Toggle: only for item rows
+                    row = flat[cursor] if cursor < len(flat) else None
+                    if row and row[0] == "item":
+                        item = groups[row[1]]["items"][row[2]]
+                        item_id = item["id"]
+                        if item_id in checked:
+                            checked.discard(item_id)
+                        else:
+                            checked.add(item_id)
+                elif key in {curses.KEY_ENTER, 10, 13}:
+                    result_holder[0] = set(checked)
+                    return
+                elif key in {27, ord("q")}:
+                    result_holder[0] = cancel_returns
+                    return
+
+        curses.wrapper(_draw)
+        flush_stdin()
+        return result_holder[0] if result_holder[0] is not None else cancel_returns
+
+    except KeyboardInterrupt:
+        return cancel_returns
+    except Exception:
+        # Fallback: plain text numbered checklist
+        return _tree_numbered_fallback(title, groups, checked, cancel_returns)
+
+
+def _tree_numbered_fallback(
+    title: str,
+    groups: list,
+    checked: set,
+    cancel_returns: set,
+) -> set:
+    """Text-based fallback for the tree checklist."""
+    from hermes_cli.colors import Colors, color
+
+    # Build flat numbered list
+    flat_items: list = []
+    for g in groups:
+        flat_items.append((None, f"[{g['name']}]"))
+        for item in g.get("items", []):
+            flat_items.append((item["id"], f"  {item['label']}"))
+
+    print(color(f"\n  {title}", Colors.YELLOW))
+    print(color("  Toggle by number, Enter to confirm.\n", Colors.DIM))
+
+    while True:
+        for i, (item_id, label) in enumerate(flat_items):
+            if item_id is None:
+                # Group header
+                print(color(f"  {label}", Colors.CYAN))
+            else:
+                marker = color("[✓]", Colors.GREEN) if item_id in checked else "[ ]"
+                print(f"  {marker} {i + 1:>3}. {label}")
+        print()
+        try:
+            val = input(color("  Toggle # (or Enter to confirm): ", Colors.DIM)).strip()
+            if not val:
+                break
+            idx = int(val) - 1
+            if 0 <= idx < len(flat_items):
+                item_entry = flat_items[idx]
+                if item_entry[0] is not None:
+                    item_id = item_entry[0]
+                    if item_id in checked:
+                        checked.discard(item_id)
+                    else:
+                        checked.add(item_id)
+        except (ValueError, KeyboardInterrupt, EOFError):
+            return cancel_returns
+        print()
+
+    return checked
