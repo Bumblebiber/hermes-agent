@@ -5957,12 +5957,14 @@ class HermesCLI:
             for i, p in enumerate(participants)
         )
         print()
-        print(f"  🧠  GroupChat: {technique.upper()}  ·  {rounds} round(s)")
+        print(f"  🧠  GroupChat: {technique.upper()}")
         print(f"  Topic: {topic}")
         print(f"  {_DIM}Participants:{_RST}")
         print(f"  {prov_str}")
         print()
-        print(f"  {_DIM}@Name message{_RST}  ·  {_DIM}@all message{_RST}  ·  {_DIM}/stop{_RST}")
+        print(f"  {_DIM}Type a message (Enter to send to all).  /stop to end.  Commands:{_RST}")
+        print(f"  {_DIM}  @name msg  — address specific participant{_RST}")
+        print(f"  {_DIM}  @all msg   — address all participants (default if no @mention){_RST}")
         print()
 
         # ── Initial round ──────────────────────────────────────────
@@ -5975,8 +5977,7 @@ class HermesCLI:
 
         # ── Interactive loop ───────────────────────────────────────
         try:
-            round_num = 1
-            while round_num < rounds:
+            while True:
                 flush_stdin()
                 try:
                     user_input = input("  🧠 > ").strip()
@@ -5989,16 +5990,22 @@ class HermesCLI:
                 if user_input.lower() in ("/stop", "/exit", "/quit"):
                     break
 
+                # Auto-prefix @all if no @mention present
+                if not any(
+                    user_input.lower().startswith(f"@{p['name'].lower()}") or
+                    user_input.lower().startswith("@all") or
+                    user_input.lower().startswith("@everyone")
+                    for p in participants
+                ):
+                    user_input = f"@all {user_input}"
+
                 try:
                     result = gc.send(user_input)
                     print()
                     print(result)
-                    round_num += 1
                 except Exception as exc:
                     print(f"\n  {_DIM}Error:{_RST} {exc}\n")
 
-            if round_num >= rounds and rounds > 1:
-                print(f"  {_DIM}All {rounds} rounds complete.{_RST}")
         except Exception:
             pass
 
