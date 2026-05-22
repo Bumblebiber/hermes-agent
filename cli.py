@@ -5840,17 +5840,20 @@ class HermesCLI:
         from tools.brainstorm_tool import _find_skill_file, _parse_skill, _list_available_techniques, _discover_available_models
         from hermes_cli.curses_ui import curses_radiolist, curses_checklist, flush_stdin
         import prompt_toolkit
+        from prompt_toolkit.shortcuts import input_dialog
 
         # ── Step 1: Topic ──────────────────────────────────────────
-        print()
-        _cprint(f"  🧠  Brainstorm")
-        try:
-            topic = prompt_toolkit.prompt("  Topic: ").strip()
-        except (EOFError, KeyboardInterrupt):
+        flush_stdin()
+        topic = input_dialog(
+            title="🧠 Brainstorm",
+            text="What topic do you want to brainstorm?",
+        ).run()
+        if topic is None:
             _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
             return
+        topic = topic.strip()
         if not topic:
-            _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
+            _cprint(f"  {_DIM}Empty topic — cancelled.{_RST}")
             return
 
         # ── Step 2: Technique ─────────────────────────────────────
@@ -5891,15 +5894,17 @@ class HermesCLI:
         chosen_models = [available_models[i] for i in sorted(chosen_idx)]
 
         # ── Step 4: Rounds ────────────────────────────────────────
+        answer = input_dialog(
+            title="🧠 Brainstorm",
+            text="How many rounds? (1-5):",
+        ).run()
+        if answer is None:
+            _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
+            return
         try:
-            answer = prompt_toolkit.prompt("  Rounds (1-5, default 1): ").strip()
-        except (EOFError, KeyboardInterrupt):
+            rounds = max(1, min(5, int(answer.strip())))
+        except ValueError:
             rounds = 1
-        else:
-            try:
-                rounds = max(1, min(5, int(answer))) if answer else 1
-            except ValueError:
-                rounds = 1
 
         # ── Load technique & build GroupChat ──────────────────────
         skill_file = _find_skill_file(technique)
