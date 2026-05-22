@@ -5839,7 +5839,6 @@ class HermesCLI:
         from agent.groupchat import GroupChat
         from tools.brainstorm_tool import _find_skill_file, _parse_skill, _list_available_techniques, _discover_available_models
         from hermes_cli.curses_ui import curses_radiolist, curses_checklist, flush_stdin
-        import prompt_toolkit
         from prompt_toolkit.shortcuts import input_dialog
 
         # ── Step 1: Topic ──────────────────────────────────────────
@@ -5947,13 +5946,9 @@ class HermesCLI:
         try:
             round_num = 1
             while round_num < rounds:
+                flush_stdin()
                 try:
-                    user_input = prompt_toolkit.prompt(
-                        [("class:brainstorm-prompt", "  🧠 > ")],
-                        style=prompt_toolkit.styles.Style.from_dict({
-                            "brainstorm-prompt": "#ff6b9d bold",
-                        }),
-                    ).strip()
+                    user_input = input("  🧠 > ").strip()
                 except (EOFError, KeyboardInterrupt):
                     print(f"\n  {_DIM}Exiting brainstorm.{_RST}\n")
                     break
