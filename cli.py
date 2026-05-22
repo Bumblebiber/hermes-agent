@@ -5839,7 +5839,9 @@ class HermesCLI:
         from agent.groupchat import GroupChat
         from tools.brainstorm_tool import _find_skill_file, _parse_skill, _list_available_techniques
         from tools.openrouter_catalog import get_model_tree
-        from hermes_cli.curses_ui import curses_radiolist, curses_tree_checklist, flush_stdin
+        from hermes_cli.curses_ui import (
+            curses_radiolist, curses_tree_checklist, curses_role_assigner, flush_stdin,
+        )
         from prompt_toolkit.shortcuts import input_dialog
 
         # ── Step 1: Topic ──────────────────────────────────────────
@@ -5856,7 +5858,7 @@ class HermesCLI:
             _cprint(f"  {_DIM}Empty topic — cancelled.{_RST}")
             return
 
-        # ── Step 2: Technique ─────────────────────────────────────
+        # ── Step 2: Technique (load early so we know the roles) ────
         techniques = _list_available_techniques()
         if not techniques:
             _cprint(f"  {_DIM}No techniques found.{_RST}")
@@ -5874,10 +5876,21 @@ class HermesCLI:
             return
         technique = techniques[technique_idx]
 
+        # Load technique participants (roles)
+        skill_file = _find_skill_file(technique)
+        try:
+            skill = _parse_skill(skill_file)
+        except Exception:
+            _cprint(f"  {_DIM}Failed to load technique '{technique}'.{_RST}")
+            return
+        participants = skill.get("participants", [])
+        if not participants:
+            _cprint(f"  {_DIM}No participants defined in '{technique}'.{_RST}")
+            return
+
         # ── Step 3: Models ────────────────────────────────────────
         checkout_models = os.getenv("CHECKOUT_MODELS_OVERRIDE")
         if checkout_models:
-            # Fast path: explicit model list in env var (comma-separated provider/model)
             available_models = []
             for entry in checkout_models.split(","):
                 entry = entry.strip()
@@ -5889,7 +5902,6 @@ class HermesCLI:
                     "key": f"{provider.upper()}_API_KEY",
                 })
         else:
-            # Dynamic: fetch from OpenRouter API + local providers → tree picker
             model_tree = get_model_tree()
             if not model_tree:
                 _cprint(f"  {_DIM}No models found — check API keys in ~/.hermes/.env{_RST}")
@@ -5905,7 +5917,6 @@ class HermesCLI:
                 _cprint(f"  {_DIM}No models selected — cancelled.{_RST}")
                 return
 
-            # Build model list from selected IDs
             available_models = []
             for g in model_tree:
                 for item in g.get("items", []):
@@ -5923,27 +5934,32 @@ class HermesCLI:
 
         chosen_models = available_models
 
-        # ── Step 4: Rounds ────────────────────────────────────────
-        answer = input_dialog(
-            title="🧠 Brainstorm",
-            text="How many rounds? (1-5):",
-        ).run()
-        if answer is None:
-            _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
-            return
-        try:
-            rounds = max(1, min(5, int(answer.strip())))
-        except ValueError:
-            rounds = 1
+        # ── Step 4: Role assignment ────────────────────────────────
+        if len(chosen_models) > 1:
+            role_names = [{"name": p["name"]} for p in participants]
+            model_labels = [
+                f"{m['provider']}/{m['model']}" for m in chosen_models
+            ]
+            flush_stdin()
+            assignments = curses_role_assigner(
+                f"🧠 Brainstorm — Assign models to {technique} roles (↑↓ select, ← → cycle, ENTER confirm)",
+                role_names,
+                [{"label": lbl} for lbl in model_labels],
+            )
+            flush_stdin()
+            if assignments is None:
+                _cprint(f"  {_DIM}Brainstorm cancelled.{_RST}")
+                return
+        else:
+            # Single model: all roles get it
+            assignments = {p["name"]: 0 for p in participants}
 
-        # ── Load technique & build GroupChat ──────────────────────
-        skill_file = _find_skill_file(technique)
-        skill = _parse_skill(skill_file)
-        participants = skill.get("participants", [])
-
+        # ── Build GroupChat ────────────────────────────────────────
         gc = GroupChat()
-        for i, p in enumerate(participants):
-            mi = i % len(chosen_models)
+        for p in participants:
+            mi = assignments.get(p["name"], 0)
+            if mi >= len(chosen_models):
+                mi = mi % len(chosen_models)
             gc.add(
                 name=p["name"],
                 system=p["system_prompt"],
@@ -5953,8 +5969,8 @@ class HermesCLI:
 
         # ── Welcome banner ─────────────────────────────────────────
         prov_str = "\n  ".join(
-            f"@{p['name']} ({chosen_models[i % len(chosen_models)]['provider']}/{chosen_models[i % len(chosen_models)]['model']})"
-            for i, p in enumerate(participants)
+            f"@{p['name']} → {chosen_models[assignments.get(p['name'], 0) % len(chosen_models)]['provider']}/{chosen_models[assignments.get(p['name'], 0) % len(chosen_models)]['model']}"
+            for p in participants
         )
         print()
         print(f"  🧠  GroupChat: {technique.upper()}")

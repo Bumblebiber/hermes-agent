@@ -720,3 +720,205 @@ def _tree_numbered_fallback(
         print()
 
     return checked
+
+
+def curses_role_assigner(
+    title: str,
+    roles: list,
+    models: list,
+    *,
+    initial: dict | None = None,
+) -> dict | None:
+    """Curses role-to-model assignment table. Returns role→model_index mapping.
+
+    Args:
+        title: Header line.
+        roles: List of role dicts: {name, description?}
+        models: List of model dicts: {id, provider, model, label}
+        initial: Dict[role_name → model_index] (default: round-robin)
+
+    Returns:
+        Dict mapping role name to model index. None on cancel.
+    """
+    if not sys.stdin.isatty():
+        return initial or _default_assignments(roles, models)
+
+    # Build initial assignments (round-robin if not provided)
+    if initial is None:
+        initial = _default_assignments(roles, models)
+
+    assignments = dict(initial)
+
+    try:
+        import curses
+        result_holder: list = [None]
+        cursor = 0  # selected role index
+
+        def _draw(stdscr):
+            nonlocal cursor
+
+            curses.curs_set(0)
+            if curses.has_colors():
+                curses.start_color()
+                curses.use_default_colors()
+                curses.init_pair(1, curses.COLOR_GREEN, -1)   # selected row
+                curses.init_pair(2, curses.COLOR_YELLOW, -1)  # header
+                curses.init_pair(3, 8, -1)                     # dim
+                curses.init_pair(4, curses.COLOR_CYAN, -1)     # role name
+
+            while True:
+                stdscr.clear()
+                max_y, max_x = stdscr.getmaxyx()
+
+                # Header
+                try:
+                    hattr = curses.A_BOLD
+                    if curses.has_colors():
+                        hattr |= curses.color_pair(2)
+                    stdscr.addnstr(0, 0, title, max_x - 1, hattr)
+                    stdscr.addnstr(
+                        1, 0,
+                        "  ↑↓ select role  ← → cycle model  ENTER confirm  ESC cancel",
+                        max_x - 1, curses.A_DIM,
+                    )
+                except curses.error:
+                    pass
+
+                row_start = 3
+                for ri, role in enumerate(roles):
+                    y = row_start + ri
+                    if y >= max_y - 1:
+                        break
+
+                    role_name = role["name"]
+                    mi = assignments.get(role_name, ri % len(models) if models else 0)
+                    model_label = models[mi]["label"] if models and 0 <= mi < len(models) else "(no models)"
+
+                    # Role name (cyan, bold if selected)
+                    rattr = curses.A_NORMAL
+                    if ri == cursor:
+                        rattr = curses.A_BOLD
+                        if curses.has_colors():
+                            rattr |= curses.color_pair(1)
+                    elif curses.has_colors():
+                        rattr |= curses.color_pair(4)
+
+                    role_display = f"  {role_name:<16s}"
+                    try:
+                        stdscr.addnstr(y, 0, role_display, max_x - 1, rattr)
+                    except curses.error:
+                        pass
+
+                    # Arrow + model
+                    arrow = " → " if ri == cursor else "   "
+                    model_display = f"{arrow}{model_label}"
+                    try:
+                        stdscr.addnstr(y, len(role_display), model_display,
+                                       max_x - len(role_display) - 1, curses.A_NORMAL)
+                    except curses.error:
+                        pass
+
+                    # Left/right hints on cursor row
+                    if ri == cursor and models:
+                        hint = f"← {mi + 1}/{len(models)} →"
+                        try:
+                            hx = max_x - len(hint) - 1
+                            stdscr.addnstr(y, hx, hint, len(hint), curses.A_DIM)
+                        except curses.error:
+                            pass
+
+                # Status bar
+                try:
+                    assigned = set(assignments.values())
+                    status = f"{len(assigned)}/{len(models)} models assigned"
+                    sx = max(0, max_x - len(status) - 1)
+                    sattr = curses.A_DIM
+                    if curses.has_colors():
+                        sattr |= curses.color_pair(3)
+                    stdscr.addnstr(max_y - 1, sx, status, max_x - sx - 1, sattr)
+                except curses.error:
+                    pass
+
+                stdscr.refresh()
+                key = stdscr.getch()
+
+                if key in {curses.KEY_UP, ord("k")}:
+                    cursor = (cursor - 1) % len(roles)
+                elif key in {curses.KEY_DOWN, ord("j")}:
+                    cursor = (cursor + 1) % len(roles)
+                elif key in {curses.KEY_LEFT, ord("h")}:
+                    if models:
+                        role_name = roles[cursor]["name"]
+                        current = assignments.get(role_name, cursor % len(models))
+                        assignments[role_name] = (current - 1) % len(models)
+                elif key in {curses.KEY_RIGHT, ord("l")}:
+                    if models:
+                        role_name = roles[cursor]["name"]
+                        current = assignments.get(role_name, cursor % len(models))
+                        assignments[role_name] = (current + 1) % len(models)
+                elif key in {curses.KEY_ENTER, 10, 13}:
+                    result_holder[0] = dict(assignments)
+                    return
+                elif key in {27, ord("q")}:
+                    result_holder[0] = None
+                    return
+
+        curses.wrapper(_draw)
+        flush_stdin()
+        return result_holder[0]
+
+    except KeyboardInterrupt:
+        return None
+    except Exception:
+        # Fallback: print assignments and let user confirm
+        return _role_numbered_fallback(title, roles, models, assignments)
+
+
+def _default_assignments(roles: list, models: list) -> dict:
+    """Build round-robin role→model_index mapping."""
+    if not models:
+        return {}
+    return {r["name"]: i % len(models) for i, r in enumerate(roles)}
+
+
+def _role_numbered_fallback(
+    title: str,
+    roles: list,
+    models: list,
+    assignments: dict,
+) -> dict | None:
+    """Text-based fallback for role assignment."""
+    from hermes_cli.colors import Colors, color
+
+    print(color(f"\n  {title}", Colors.YELLOW))
+    print(color("  Enter model # to reassign, Enter to confirm.\n", Colors.DIM))
+
+    while True:
+        for ri, role in enumerate(roles):
+            role_name = role["name"]
+            mi = assignments.get(role_name, ri % len(models) if models else 0)
+            model_label = models[mi]["label"] if models and 0 <= mi < len(models) else "(no models)"
+            print(f"  {role_name:<16s} → {model_label} [{mi + 1}]")
+
+        print()
+        for mi, m in enumerate(models):
+            print(f"  [{mi + 1}] {m['label']}")
+        print()
+
+        try:
+            val = input(color(
+                "  Assign: <role#> <model#>  (or Enter to confirm): ", Colors.DIM
+            )).strip()
+            if not val:
+                break
+            parts = val.split()
+            if len(parts) >= 2:
+                ri = int(parts[0]) - 1
+                mi = int(parts[1]) - 1
+                if 0 <= ri < len(roles) and 0 <= mi < len(models):
+                    assignments[roles[ri]["name"]] = mi
+        except (ValueError, KeyboardInterrupt, EOFError):
+            return None
+        print()
+
+    return assignments
