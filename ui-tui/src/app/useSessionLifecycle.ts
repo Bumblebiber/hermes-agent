@@ -232,6 +232,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               writeActiveSessionFile(r.resumed ?? r.session_id)
               patchUiState({
                 info: r.info ?? null,
+                noProjectCwd: false,
                 sid: r.session_id,
                 status: 'ready',
                 usage: usageFrom(r.info ?? null)
