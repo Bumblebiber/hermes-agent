@@ -1,6 +1,7 @@
 import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { existsSync } from 'node:fs'
+import { join, parse } from 'node:path'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
@@ -817,6 +818,27 @@ export function useMainApp(gw: GatewayClient) {
   const cwdRaw = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
   const cwd = existsSync(cwdRaw) ? cwdRaw : process.cwd()
   const gitBranch = useGitBranch(ui.noProjectCwd ? '' : cwd)
+
+  // Walk up from cwd looking for .tim-project marker. If not found
+  // anywhere in tree, set noProjectCwd so statusline shows "no project".
+  const _findTimProject = (dir: string): boolean => {
+    let d = dir
+    for (;;) {
+      if (existsSync(join(d, '.tim-project'))) return true
+      const { root, dir: parent } = parse(d)
+      if (d === root || d === parent) return false
+      d = parent
+    }
+  }
+  const hasTimProject = useMemo(() => _findTimProject(cwd), [cwd])
+
+  useEffect(() => {
+    if (!hasTimProject && !ui.noProjectCwd) {
+      patchUiState({ noProjectCwd: true })
+    } else if (hasTimProject && ui.noProjectCwd) {
+      patchUiState({ noProjectCwd: false })
+    }
+  }, [hasTimProject, ui.noProjectCwd])
 
   const appStatus = useMemo(
     () => ({
