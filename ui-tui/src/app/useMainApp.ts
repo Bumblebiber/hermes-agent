@@ -1,7 +1,7 @@
 import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { existsSync } from 'node:fs'
-import { join, parse } from 'node:path'
+import { join } from 'node:path'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
@@ -819,18 +819,11 @@ export function useMainApp(gw: GatewayClient) {
   const cwd = existsSync(cwdRaw) ? cwdRaw : process.cwd()
   const gitBranch = useGitBranch(ui.noProjectCwd ? '' : cwd)
 
-  // Walk up from cwd looking for .tim-project marker. If not found
-  // anywhere in tree, set noProjectCwd so statusline shows "no project".
-  const _findTimProject = (dir: string): boolean => {
-    let d = dir
-    for (;;) {
-      if (existsSync(join(d, '.tim-project'))) return true
-      const { root, dir: parent } = parse(d)
-      if (d === root || d === parent) return false
-      d = parent
-    }
-  }
-  const hasTimProject = useMemo(() => _findTimProject(cwd), [cwd])
+  // Cwd-only .tim-project check. If cwd itself has no marker, statusline
+  // shows "no project" regardless of what parents carry. Walk-up was tried
+  // in 433af4da8 and made "no project" unreachable inside meta-project
+  // trees (e.g. P0062 ~/.tim-project visible from every subdir).
+  const hasTimProject = useMemo(() => existsSync(join(cwd, '.tim-project')), [cwd])
 
   useEffect(() => {
     if (!hasTimProject && !ui.noProjectCwd) {
