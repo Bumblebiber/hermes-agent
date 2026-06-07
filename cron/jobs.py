@@ -38,10 +38,16 @@ HERMES_DIR = get_hermes_home().resolve()
 CRON_DIR = HERMES_DIR / "cron"
 JOBS_FILE = CRON_DIR / "jobs.json"
 
-# In-process lock protecting load_jobs→modify→save_jobs cycles.
+# In-process re-entrant lock protecting every load_jobs→mutate→save_jobs
+# cycle (create_job, update_job, remove_job, mark_job_run, advance_next_run,
+# get_due_jobs, rewrite_skill_refs) AND every plain read of jobs.json
+# (load_jobs, get_job, resolve_job_ref, list_jobs). Re-entrancy is required
+# because load_jobs() acquires the lock internally to serialise its
+# auto-repair save_jobs() against concurrent writers, and the writers
+# themselves call load_jobs() while already holding the lock.
 # Required when tick() runs jobs in parallel threads — without this,
 # concurrent mark_job_run / advance_next_run calls can clobber each other.
-_jobs_file_lock = threading.Lock()
+_jobs_file_lock = threading.RLock()  # RLock so load_jobs() can re-acquire during auto-repair without deadlock
 OUTPUT_DIR = CRON_DIR / "output"
 ONESHOT_GRACE_SECONDS = 120
 
@@ -402,32 +408,43 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 # =============================================================================
 
 def load_jobs() -> List[Dict[str, Any]]:
-    """Load all jobs from storage."""
-    ensure_dirs()
-    if not JOBS_FILE.exists():
-        return []
-    
-    try:
-        with open(JOBS_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return data.get("jobs", [])
-    except json.JSONDecodeError:
-        # Retry with strict=False to handle bare control chars in string values
+    """Load all jobs from storage.
+
+    Holds ``_jobs_file_lock`` for the duration of the read so that:
+      * the read snapshot is consistent against concurrent writers, and
+      * the auto-repair ``save_jobs()`` below cannot race with another
+        thread's load→mutate→save cycle.
+
+    The lock is an ``RLock`` so writers that already hold it (e.g.
+    ``update_job``) can call ``load_jobs()`` recursively without
+    deadlocking.
+    """
+    with _jobs_file_lock:
+        ensure_dirs()
+        if not JOBS_FILE.exists():
+            return []
+
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
-                data = json.loads(f.read(), strict=False)
-                jobs = data.get("jobs", [])
-                if jobs:
-                    # Auto-repair: rewrite with proper escaping
-                    save_jobs(jobs)
-                    logger.warning("Auto-repaired jobs.json (had invalid control characters)")
-                return jobs
-        except Exception as e:
-            logger.error("Failed to auto-repair jobs.json: %s", e)
-            raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
-    except IOError as e:
-        logger.error("IOError reading jobs.json: %s", e)
-        raise RuntimeError(f"Failed to read cron database: {e}") from e
+                data = json.load(f)
+                return data.get("jobs", [])
+        except json.JSONDecodeError:
+            # Retry with strict=False to handle bare control chars in string values
+            try:
+                with open(JOBS_FILE, 'r', encoding='utf-8') as f:
+                    data = json.loads(f.read(), strict=False)
+                    jobs = data.get("jobs", [])
+                    if jobs:
+                        # Auto-repair: rewrite with proper escaping
+                        save_jobs(jobs)
+                        logger.warning("Auto-repaired jobs.json (had invalid control characters)")
+                    return jobs
+            except Exception as e:
+                logger.error("Failed to auto-repair jobs.json: %s", e)
+                raise RuntimeError(f"Cron database corrupted and unrepairable: {e}") from e
+        except IOError as e:
+            logger.error("IOError reading jobs.json: %s", e)
+            raise RuntimeError(f"Failed to read cron database: {e}") from e
 
 
 def save_jobs(jobs: List[Dict[str, Any]]):
@@ -664,16 +681,18 @@ def create_job(
         "profile": normalized_profile,
     }
 
-    jobs = load_jobs()
-    jobs.append(job)
-    save_jobs(jobs)
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        jobs.append(job)
+        save_jobs(jobs)
 
     return job
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Get a job by ID."""
-    jobs = load_jobs()
+    with _jobs_file_lock:
+        jobs = load_jobs()
     for job in jobs:
         if job["id"] == job_id:
             return _normalize_job_record(job)
@@ -703,7 +722,8 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
     """
     if not ref:
         return None
-    jobs = load_jobs()
+    with _jobs_file_lock:
+        jobs = load_jobs()
     for job in jobs:
         if job["id"] == ref:
             return _normalize_job_record(job)
@@ -720,7 +740,9 @@ def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     """List all jobs, optionally including disabled ones."""
-    jobs = [_normalize_job_record(j) for j in load_jobs()]
+    with _jobs_file_lock:
+        raw = load_jobs()
+    jobs = [_normalize_job_record(j) for j in raw]
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     return jobs
@@ -728,58 +750,59 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Update a job by ID, refreshing derived schedule fields when needed."""
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] != job_id:
-            continue
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
 
-        # Validate / normalize workdir if present in updates.  Empty string or
-        # None both mean "clear the field" (restore old behaviour).
-        if "workdir" in updates:
-            _wd = updates["workdir"]
-            if _wd in {None, "", False}:
-                updates["workdir"] = None
-            else:
-                updates["workdir"] = _normalize_workdir(_wd)
+            # Validate / normalize workdir if present in updates.  Empty string or
+            # None both mean "clear the field" (restore old behaviour).
+            if "workdir" in updates:
+                _wd = updates["workdir"]
+                if _wd in {None, "", False}:
+                    updates["workdir"] = None
+                else:
+                    updates["workdir"] = _normalize_workdir(_wd)
 
-        # Validate / normalize profile if present in updates.  Empty string or
-        # None both mean "clear the field" (restore old behaviour).
-        if "profile" in updates:
-            _profile = updates["profile"]
-            if _profile is None or _profile == "" or _profile is False:
-                updates["profile"] = None
-            else:
-                updates["profile"] = _normalize_profile(_profile)
+            # Validate / normalize profile if present in updates.  Empty string or
+            # None both mean "clear the field" (restore old behaviour).
+            if "profile" in updates:
+                _profile = updates["profile"]
+                if _profile is None or _profile == "" or _profile is False:
+                    updates["profile"] = None
+                else:
+                    updates["profile"] = _normalize_profile(_profile)
 
-        updated = _apply_skill_fields({**job, **updates})
-        schedule_changed = "schedule" in updates
+            updated = _apply_skill_fields({**job, **updates})
+            schedule_changed = "schedule" in updates
 
-        if "skills" in updates or "skill" in updates:
-            normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
-            updated["skills"] = normalized_skills
-            updated["skill"] = normalized_skills[0] if normalized_skills else None
+            if "skills" in updates or "skill" in updates:
+                normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
+                updated["skills"] = normalized_skills
+                updated["skill"] = normalized_skills[0] if normalized_skills else None
 
-        if schedule_changed:
-            updated_schedule = updated["schedule"]
-            # The API may pass schedule as a raw string (e.g. "every 10m")
-            # instead of a pre-parsed dict.  Normalize it the same way
-            # create_job() does so downstream code can call .get() safely.
-            if isinstance(updated_schedule, str):
-                updated_schedule = parse_schedule(updated_schedule)
-                updated["schedule"] = updated_schedule
-            updated["schedule_display"] = updates.get(
-                "schedule_display",
-                updated_schedule.get("display", updated.get("schedule_display")),
-            )
-            if updated.get("state") != "paused":
-                updated["next_run_at"] = compute_next_run(updated_schedule)
+            if schedule_changed:
+                updated_schedule = updated["schedule"]
+                # The API may pass schedule as a raw string (e.g. "every 10m")
+                # instead of a pre-parsed dict.  Normalize it the same way
+                # create_job() does so downstream code can call .get() safely.
+                if isinstance(updated_schedule, str):
+                    updated_schedule = parse_schedule(updated_schedule)
+                    updated["schedule"] = updated_schedule
+                updated["schedule_display"] = updates.get(
+                    "schedule_display",
+                    updated_schedule.get("display", updated.get("schedule_display")),
+                )
+                if updated.get("state") != "paused":
+                    updated["next_run_at"] = compute_next_run(updated_schedule)
 
-        if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-            updated["next_run_at"] = compute_next_run(updated["schedule"])
+            if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
+                updated["next_run_at"] = compute_next_run(updated["schedule"])
 
-        jobs[i] = updated
-        save_jobs(jobs)
-        return _normalize_job_record(jobs[i])
+            jobs[i] = updated
+            save_jobs(jobs)
+            return _normalize_job_record(jobs[i])
     return None
 
 
@@ -841,11 +864,15 @@ def remove_job(job_id: str) -> bool:
     if not job:
         return False
     canonical_id = job["id"]
-    jobs = load_jobs()
-    original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != canonical_id]
-    if len(jobs) < original_len:
-        save_jobs(jobs)
+    removed = False
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        original_len = len(jobs)
+        jobs = [j for j in jobs if j["id"] != canonical_id]
+        if len(jobs) < original_len:
+            save_jobs(jobs)
+            removed = True
+    if removed:
         # Clean up output directory to prevent orphaned dirs accumulating
         job_output_dir = OUTPUT_DIR / canonical_id
         if job_output_dir.exists():
