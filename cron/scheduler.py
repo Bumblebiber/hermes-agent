@@ -17,6 +17,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
@@ -133,6 +134,15 @@ SILENT_MARKER = "[SILENT]"
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
+
+# In-process tick state (F-CRON-002 / F-CRON-003). Cross-process exclusion uses
+# the file lock; these sets track async futures and running job ids within one
+# gateway process only.
+_tick_running_futures: set[concurrent.futures.Future] = set()
+_tick_running_futures_lock = threading.Lock()
+_running_job_ids: set[str] = set()
+_running_job_ids_lock = threading.Lock()
+_tick_wait_timeout: int = 600
 
 
 def _get_hermes_home() -> Path:
@@ -1860,6 +1870,9 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         def _process_job(job: dict) -> bool:
             """Run one due job end-to-end: execute, save, deliver, mark."""
+            job_id = job["id"]
+            with _running_job_ids_lock:
+                _running_job_ids.add(job_id)
             try:
                 success, output, final_response, error = run_job(job)
 
@@ -1901,6 +1914,25 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 logger.error("Error processing job %s: %s", job['id'], e)
                 mark_job_run(job["id"], False, str(e))
                 return False
+            finally:
+                with _running_job_ids_lock:
+                    _running_job_ids.discard(job_id)
+
+        def _job_is_running(job_id: str) -> bool:
+            with _running_job_ids_lock:
+                return job_id in _running_job_ids
+
+        def _skip_still_running(job: dict) -> None:
+            mark_job_run(
+                job["id"],
+                False,
+                "still running — skipped",
+                delivery_error=None,
+            )
+
+        def _unregister_tick_future(fut: concurrent.futures.Future) -> None:
+            with _tick_running_futures_lock:
+                _tick_running_futures.discard(fut)
 
         # Partition due jobs: jobs with a per-job workdir and/or profile touch
         # process-global runtime state inside run_job. Workdir jobs temporarily
@@ -1922,22 +1954,61 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
 
         # Sequential pass for env/context-mutating jobs.
         for job in sequential_jobs:
+            if _job_is_running(job["id"]):
+                _skip_still_running(job)
+                continue
             _ctx = contextvars.copy_context()
             _results.append(_ctx.run(_process_job, job))
 
         # Parallel pass for the rest — same behaviour as before.
         if parallel_jobs:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
-                _futures = []
+            _tick_pool = concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers)
+            _parallel_timed_out = False
+            try:
+                _futures: list[concurrent.futures.Future] = []
                 for job in parallel_jobs:
+                    if _job_is_running(job["id"]):
+                        _skip_still_running(job)
+                        continue
                     _ctx = contextvars.copy_context()
-                    _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-                for f in concurrent.futures.as_completed(_futures, timeout=600):
+                    _future = _tick_pool.submit(_ctx.run, _process_job, job)
+                    with _tick_running_futures_lock:
+                        _tick_running_futures.add(_future)
+                    _future.add_done_callback(_unregister_tick_future)
+                    _futures.append(_future)
+
+                if _futures:
                     try:
-                        _results.append(f.result())
+                        _done, _not_done = concurrent.futures.wait(
+                            _futures, timeout=_tick_wait_timeout
+                        )
                     except Exception as exc:
-                        logger.error("Parallel cron job future failed: %s", exc)
-                        _results.append(False)
+                        logger.error(
+                            "Parallel cron tick wait failed: %s", exc
+                        )
+                        _done, _not_done = set(), set(_futures)
+
+                    if _not_done:
+                        _parallel_timed_out = True
+                        logger.error(
+                            "%d parallel cron job(s) did not finish within %ds",
+                            len(_not_done),
+                            _tick_wait_timeout,
+                        )
+                        for _pending in _not_done:
+                            _pending.cancel()
+                            _results.append(False)
+
+                    for _future in _done:
+                        try:
+                            _results.append(_future.result())
+                        except Exception as exc:
+                            logger.error(
+                                "Parallel cron job future failed: %s", exc
+                            )
+                            _results.append(False)
+            finally:
+                _tick_pool.shutdown(wait=not _parallel_timed_out)
 
         # Best-effort sweep of MCP stdio subprocesses that survived their
         # session teardown during this tick.  Runs AFTER every job has
