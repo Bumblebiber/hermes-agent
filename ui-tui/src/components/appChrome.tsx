@@ -276,6 +276,7 @@ export function StatusRule({
   busy,
   status,
   statusColor,
+  projectName,
   model,
   modelFast,
   modelReasoningEffort,
@@ -304,6 +305,8 @@ export function StatusRule({
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
+          <Text color={t.color.muted}>{projectName}</Text>
+          <Text color={t.color.muted}> │ </Text>
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} />
           ) : (
@@ -458,6 +461,7 @@ interface StatusRuleProps {
   busy: boolean
   cols: number
   cwdLabel: string
+  projectName: string
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string

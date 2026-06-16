@@ -1,6 +1,7 @@
 import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { existsSync } from 'node:fs'
+import { formatProjectName, parseProjectLabel } from '../domain/projectName.js'
 import { join } from 'node:path'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -825,6 +826,13 @@ export function useMainApp(gw: GatewayClient) {
   // trees (e.g. P0062 ~/.tim-project visible from every subdir).
   const hasTimProject = useMemo(() => existsSync(join(cwd, '.tim-project')), [cwd])
 
+  const projectLabel = useMemo(() => {
+    if (!hasTimProject) return null
+    return parseProjectLabel(cwd)
+  }, [cwd, hasTimProject])
+
+  const projectName = useMemo(() => formatProjectName(projectLabel), [projectLabel])
+
   useEffect(() => {
     if (!hasTimProject && !ui.noProjectCwd) {
       patchUiState({ noProjectCwd: true })
@@ -836,6 +844,7 @@ export function useMainApp(gw: GatewayClient) {
   const appStatus = useMemo(
     () => ({
       cwdLabel: ui.noProjectCwd ? 'no project' : fmtCwdBranch(cwd, gitBranch),
+      projectName,
       goodVibesTick,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
@@ -849,6 +858,7 @@ export function useMainApp(gw: GatewayClient) {
     [
       cwd,
       gitBranch,
+      projectName,
       goodVibesTick,
       sessionStartedAt,
       stickyPrompt,
