@@ -2,7 +2,7 @@ import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, typ
 import { useStore } from '@nanostores/react'
 import { existsSync } from 'node:fs'
 import { formatProjectName, parseProjectLabel } from '../domain/projectName.js'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
@@ -820,15 +820,22 @@ export function useMainApp(gw: GatewayClient) {
   const cwd = existsSync(cwdRaw) ? cwdRaw : process.cwd()
   const gitBranch = useGitBranch(ui.noProjectCwd ? '' : cwd)
 
-  // Cwd-only .tim-project check. If cwd itself has no marker, statusline
-  // shows "no project" regardless of what parents carry. Walk-up was tried
-  // in 433af4da8 and made "no project" unreachable inside meta-project
-  // trees (e.g. P0062 ~/.tim-project visible from every subdir).
-  const hasTimProject = useMemo(() => existsSync(join(cwd, '.tim-project')), [cwd])
+  // Cwd-first .tim-project check; one-level parent fallback for ui-tui/ deploy.
+  // No walk-up chain — prevents meta-project bleed (433af4da8).
+  const hasTimProject = useMemo(() => {
+    if (existsSync(join(cwd, '.tim-project'))) return true
+    const parent = resolve(cwd, '..')
+    return parent !== cwd && existsSync(join(parent, '.tim-project'))
+  }, [cwd])
 
   const projectLabel = useMemo(() => {
-    if (!hasTimProject) return null
-    return parseProjectLabel(cwd)
+    if (hasTimProject) {
+      const fromCwd = parseProjectLabel(cwd)
+      if (fromCwd) return fromCwd
+      const parent = resolve(cwd, '..')
+      if (parent !== cwd) return parseProjectLabel(parent)
+    }
+    return null
   }, [cwd, hasTimProject])
 
   const projectName = useMemo(() => formatProjectName(projectLabel), [projectLabel])
