@@ -1,6 +1,7 @@
 import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { existsSync } from 'node:fs'
+import { parseBatchInfo } from '../domain/marker.js'
 import { formatProjectName, parseProjectLabel } from '../domain/projectName.js'
 import { join, resolve } from 'node:path'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -840,6 +841,16 @@ export function useMainApp(gw: GatewayClient) {
 
   const projectName = useMemo(() => formatProjectName(projectLabel), [projectLabel])
 
+  const batchInfo = useMemo(() => {
+    if (hasTimProject) {
+      const fromCwd = parseBatchInfo(cwd)
+      if (fromCwd) return fromCwd
+      const parent = resolve(cwd, '..')
+      if (parent !== cwd) return parseBatchInfo(parent)
+    }
+    return null
+  }, [cwd, hasTimProject])
+
   useEffect(() => {
     if (!hasTimProject && !ui.noProjectCwd) {
       patchUiState({ noProjectCwd: true })
@@ -852,6 +863,7 @@ export function useMainApp(gw: GatewayClient) {
     () => ({
       cwdLabel: ui.noProjectCwd ? 'no project' : fmtCwdBranch(cwd, gitBranch),
       projectName,
+      batchSummary: batchInfo ? `${batchInfo.batchesSummarized}/${batchInfo.batchSize}` : null,
       goodVibesTick,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
       showStickyPrompt: !!stickyPrompt,
@@ -866,6 +878,7 @@ export function useMainApp(gw: GatewayClient) {
       cwd,
       gitBranch,
       projectName,
+      batchInfo,
       goodVibesTick,
       sessionStartedAt,
       stickyPrompt,

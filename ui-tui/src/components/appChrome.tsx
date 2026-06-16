@@ -277,6 +277,7 @@ export function StatusRule({
   status,
   statusColor,
   projectName,
+  batchSummary,
   model,
   modelFast,
   modelReasoningEffort,
@@ -307,6 +308,7 @@ export function StatusRule({
           {'─ '}
           <Text color={t.color.muted}>{projectName}</Text>
           <Text color={t.color.muted}> │ </Text>
+          {batchSummary ? <Text color={t.color.muted}>{batchSummary} │ </Text> : null}
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} />
           ) : (
@@ -458,6 +460,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 
 interface StatusRuleProps {
   bgCount: number
+  batchSummary: string | null
   busy: boolean
   cols: number
   cwdLabel: string
