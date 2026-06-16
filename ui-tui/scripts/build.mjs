@@ -59,3 +59,29 @@ if (body.startsWith('#!')) {
 }
 
 console.log(`built ${out}`)
+
+const dashboardOut = resolve(root, 'dist/dashboard.js')
+
+await build({
+  entryPoints: [resolve(root, 'src/dashboard/entry.tsx')],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  outfile: dashboardOut,
+  jsx: 'automatic',
+  jsxImportSource: 'react',
+  alias: { '@hermes/ink': resolve(root, 'packages/hermes-ink/src/entry-exports.ts') },
+  plugins: [stubDevtools],
+  banner: {
+    js: "import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);"
+  },
+  logLevel: 'info'
+})
+
+const dashboardBody = readFileSync(dashboardOut, 'utf8')
+if (dashboardBody.startsWith('#!')) {
+  writeFileSync(dashboardOut, dashboardBody.slice(dashboardBody.indexOf('\n') + 1))
+}
+
+console.log(`built ${dashboardOut}`)

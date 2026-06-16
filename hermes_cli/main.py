@@ -10292,6 +10292,17 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def cmd_dashboard_tui(args):
+    """Start the terminal PM dashboard TUI."""
+    _dist = PROJECT_ROOT / "ui-tui" / "dist" / "dashboard.js"
+
+    if not _dist.exists():
+        print("Build dashboard TUI first: cd ui-tui && npm run build")
+        sys.exit(1)
+
+    os.execvp("node", ["node", str(_dist)])
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -10420,7 +10431,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "config", "cron", "curator", "dashboard", "dashboard-tui", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
@@ -13201,6 +13212,13 @@ Examples:
         help="List running hermes dashboard processes and exit",
     )
     dashboard_parser.set_defaults(func=cmd_dashboard)
+
+    dashboard_tui_parser = subparsers.add_parser(
+        "dashboard-tui",
+        help="Start terminal PM dashboard TUI",
+        description="Launch the Hermes Agent terminal dashboard (Tasks, Tmux, Crons, Usage)",
+    )
+    dashboard_tui_parser.set_defaults(func=cmd_dashboard_tui)
 
     # =========================================================================
     # logs command
