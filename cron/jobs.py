@@ -3,6 +3,9 @@ Cron job storage and management.
 
 Jobs are stored in ~/.hermes/cron/jobs.json
 Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
+
+# vX.Y.Z: Fixed weekly-schedule bug: next_run_at now computed from current time,
+# not last_run_at (ULID: 01KVA7DSMZC333A0S6W5QEG79R)
 """
 
 import copy
@@ -389,14 +392,7 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
                 schedule.get("expr"),
             )
             return None
-        # Use last_run_at as the croniter base when available, consistent
-        # with interval jobs.  This ensures that after a crash/restart,
-        # the next run is anchored to the actual last execution time
-        # rather than to an arbitrary restart time.
-        base_time = now
-        if last_run_at:
-            base_time = _ensure_aware(datetime.fromisoformat(last_run_at))
-        cron = croniter(schedule["expr"], base_time)
+        cron = croniter(schedule["expr"], now)
         next_run = cron.get_next(datetime)
         return next_run.isoformat()
 
