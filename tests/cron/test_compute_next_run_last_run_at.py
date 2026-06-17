@@ -16,7 +16,7 @@ from cron.jobs import compute_next_run
 class TestCronComputeNextRunUsesNow:
     """compute_next_run MUST use _hermes_now() as the croniter base for cron jobs."""
 
-    def test_cron_uses_last_run_at_for_every_6h_schedule(self, monkeypatch):
+    def test_cron_uses_now_for_every_6h_schedule(self, monkeypatch):
         """For a schedule like 'every 6 hours', next run is computed from now.
         If now is Apr 10 22:00, next should be Apr 11 00:00 (not Apr 6 18:00
         from last_run_at)."""

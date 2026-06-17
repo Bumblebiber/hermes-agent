@@ -4,8 +4,7 @@ Cron job storage and management.
 Jobs are stored in ~/.hermes/cron/jobs.json
 Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
 
-# vX.Y.Z: Fixed weekly-schedule bug: next_run_at now computed from current time,
-# not last_run_at (ULID: 01KVA7DSMZC333A0S6W5QEG79R)
+# 2026-06-17: next_run_at computed from current time, not last_run_at
 """
 
 import copy
